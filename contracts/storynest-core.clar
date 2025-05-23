@@ -95,10 +95,7 @@
   )
 )
 
-;; Removes a story ID from a list
-(define-private (remove-story-from-list (story-id uint) (story-list (list 100 uint)))
-  (filter (lambda (id) (not (is-eq id story-id))) story-list)
-)
+
 
 ;; Updates a creator's stories list
 (define-private (update-creator-stories (creator principal) (story-id uint))
@@ -120,64 +117,8 @@
   )
 )
 
-;; Removes a story from a collector's stories list
-(define-private (remove-collector-story (collector principal) (story-id uint))
-  (let ((current-stories (default-to { story-ids: (list) } (map-get? collector-stories { collector: collector }))))
-    (map-set collector-stories
-      { collector: collector }
-      { story-ids: (remove-story-from-list story-id (get story-ids current-stories)) }
-    )
-  )
-)
 
-;; Transfers a story to a new owner, updating all relevant data
-(define-private (transfer-story (story-id uint) (from principal) (to principal))
-  (begin
-    ;; Update ownership
-    (map-set story-owners { story-id: story-id } { owner: to })
-    
-    ;; Update collector lists
-    (remove-collector-story from story-id)
-    (update-collector-stories to story-id)
-    
-    ;; Delete any existing listing for this story
-    (map-delete story-listings { story-id: story-id })
-    
-    ;; Return success
-    (ok true)
-  )
-)
 
-;; Distributes funds for a sale (to creator as royalty, to seller, and platform fee)
-(define-private (distribute-sale-funds (story-id uint) (price uint) (seller principal) (buyer principal))
-  (let (
-    (story-data (unwrap! (map-get? stories { story-id: story-id }) ERR-STORY-NOT-FOUND))
-    (creator (get creator principal story-data))
-    (royalty-percentage (get royalty-percentage story-data))
-    (royalty-amount (calculate-royalty price royalty-percentage))
-    (platform-fee (calculate-platform-fee price))
-    (seller-amount (- price (+ royalty-amount platform-fee)))
-  )
-    (begin
-      ;; Pay royalty to creator
-      (if (> royalty-amount u0)
-        (try! (stx-transfer? royalty-amount buyer creator))
-        true
-      )
-      
-      ;; Pay platform fee
-      (try! (stx-transfer? platform-fee buyer CONTRACT-OWNER))
-      
-      ;; Pay seller if they're not the creator (first sale)
-      (if (not (is-eq seller creator))
-        (try! (stx-transfer? seller-amount buyer seller))
-        true
-      )
-      
-      (ok true)
-    )
-  )
-)
 
 ;; Read-only functions
 ;; Returns story data
@@ -343,26 +284,6 @@
   )
 )
 
-;; Buys a listed story
-(define-public (buy-story (story-id uint))
-  (let (
-    (listing (unwrap! (map-get? story-listings { story-id: story-id }) ERR-NOT-LISTED))
-    (price (get price listing))
-    (seller (get lister listing))
-    (buyer tx-sender)
-  )
-    ;; Validate the transaction
-    (asserts! (not (is-eq buyer seller)) ERR-CANNOT-BUY-OWN-STORY)
-    
-    ;; Process payment and distribution
-    (try! (distribute-sale-funds story-id price seller buyer))
-    
-    ;; Transfer ownership
-    (try! (transfer-story story-id seller buyer))
-    
-    (ok true)
-  )
-)
 
 ;; Makes an offer on a story
 (define-public (make-offer (story-id uint) (offer-price uint) (expiry uint))
@@ -402,45 +323,4 @@
   )
 )
 
-;; Accepts an offer on a story
-(define-public (accept-offer (story-id uint) (offerer principal))
-  (let (
-    (owner-data (unwrap! (map-get? story-owners { story-id: story-id }) ERR-STORY-NOT-FOUND))
-    (owner (get owner owner-data))
-    (offer (unwrap! (map-get? story-offers { story-id: story-id, offerer: offerer }) ERR-OFFER-NOT-FOUND))
-    (price (get price offer))
-    (expiry (get expiry offer))
-  )
-    ;; Validate inputs and authorization
-    (asserts! (is-eq tx-sender owner) ERR-NOT-AUTHORIZED)
-    (asserts! (<= block-height expiry) ERR-OFFER-EXPIRED)
-    
-    ;; Process payment and distribution
-    (try! (distribute-sale-funds story-id price owner offerer))
-    
-    ;; Transfer ownership
-    (try! (transfer-story story-id owner offerer))
-    
-    ;; Delete the accepted offer
-    (map-delete story-offers { story-id: story-id, offerer: offerer })
-    
-    (ok true)
-  )
-)
 
-;; Transfers a story to another user (gift or manual transfer)
-(define-public (transfer-story-to (story-id uint) (recipient principal))
-  (let (
-    (owner-data (unwrap! (map-get? story-owners { story-id: story-id }) ERR-STORY-NOT-FOUND))
-    (owner (get owner owner-data))
-  )
-    ;; Check authorization
-    (asserts! (is-eq tx-sender owner) ERR-NOT-AUTHORIZED)
-    (asserts! (not (is-eq tx-sender recipient)) ERR-CANNOT-BUY-OWN-STORY)
-    
-    ;; Transfer ownership
-    (try! (transfer-story story-id owner recipient))
-    
-    (ok true)
-  )
-)
